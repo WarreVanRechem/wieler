@@ -74,9 +74,13 @@ def optimize_team(df, budget, max_renners, verplichte_renners):
     prob += pulp.lpSum([keuze[i] for i in renners_indices]) == max_renners
     
     # Constraint 3: Verplichte renners (Must haves)
+    # FIX: Directe assignment zonder tussenvariabele
     for renner_naam in verplichte_renners:
-        idx = df[df['naam'] == renner_naam].index[0]
-        prob += choice = keuze[idx] == 1
+        # Zoek de index van de verplichte renner
+        matches = df[df['naam'] == renner_naam].index
+        if len(matches) > 0:
+            idx = matches[0]
+            prob += keuze[idx] == 1
 
     prob.solve(pulp.PULP_CBC_CMD(msg=0))
     
