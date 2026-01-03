@@ -1,158 +1,204 @@
 import streamlit as st
 import pandas as pd
 import pulp
-import random
+import os
+from datetime import datetime, date
 
 # --- CONFIGURATIE ---
 st.set_page_config(
-    page_title="Sporza Wielermanager Optimizer",
+    page_title="Sporza Wielermanager 2026 Optimizer",
     page_icon="🚴",
     layout="wide"
 )
 
+# Datum van Omloop Het Nieuwsblad 2026 (Start Seizoen)
+START_SEIZOEN = datetime(2026, 2, 28, 11, 0) # 28 feb 2026, 11:00
+
+# --- SESSION STATE ---
+if 'optimized_team' not in st.session_state:
+    st.session_state['optimized_team'] = None
+if 'optimization_success' not in st.session_state:
+    st.session_state['optimization_success'] = False
+
 # --- FUNCTIES ---
 
-@st.cache_data
+def get_countdown():
+    """Berekent de tijd tot de start van het seizoen."""
+    now = datetime.now()
+    delta = START_SEIZOEN - now
+    
+    if delta.days < 0:
+        return "Het seizoen is begonnen! 🏁"
+    else:
+        return f"{delta.days} dagen, {delta.seconds // 3600} uur tot de Omloop"
+
+@st.cache_data(ttl=3600)
 def load_data():
     """
-    Laad de rennersdata. 
-    In een productie-omgeving zou je hier live scrapen van PCS of Sporza.
-    Nu simuleren we data met logica voor 'oude' en 'nieuwe' prijzen.
+    Laadt data. Als renners.csv niet bestaat, laden we historische data
+    als 'oefenmateriaal' voor de pre-season fase.
     """
-    # Simulatie database
-    data = [
-        {"naam": "Wout van Aert", "oude_prijs": 12.0, "nieuwe_prijs": None, "verwachte_punten": 950, "type": "Kopman"},
-        {"naam": "Mathieu van der Poel", "oude_prijs": 12.0, "nieuwe_prijs": None, "verwachte_punten": 980, "type": "Kopman"},
-        {"naam": "Tadej Pogacar", "oude_prijs": 12.5, "nieuwe_prijs": 13.0, "verwachte_punten": 1100, "type": "Kopman"},
-        {"naam": "Jasper Philipsen", "oude_prijs": 10.0, "nieuwe_prijs": 11.0, "verwachte_punten": 700, "type": "Sprinter"},
-        {"naam": "Mads Pedersen", "oude_prijs": 9.0, "nieuwe_prijs": None, "verwachte_punten": 750, "type": "Klassiek"},
-        {"naam": "Arnaud De Lie", "oude_prijs": 7.0, "nieuwe_prijs": 8.5, "verwachte_punten": 600, "type": "Sprinter"},
-        {"naam": "Tom Pidcock", "oude_prijs": 8.0, "nieuwe_prijs": None, "verwachte_punten": 500, "type": "Klassiek"},
-        {"naam": "Christophe Laporte", "oude_prijs": 7.0, "nieuwe_prijs": None, "verwachte_punten": 450, "type": "Knecht/Vrij"},
-        {"naam": "Olav Kooij", "oude_prijs": 6.0, "nieuwe_prijs": None, "verwachte_punten": 400, "type": "Sprinter"},
-        {"naam": "Matteo Jorgenson", "oude_prijs": 5.0, "nieuwe_prijs": None, "verwachte_punten": 550, "type": "Klassiek"},
-        {"naam": "Maxim Van Gils", "oude_prijs": 4.0, "nieuwe_prijs": 5.5, "verwachte_punten": 350, "type": "Klimmer"},
-        {"naam": "Thibau Nys", "oude_prijs": 3.0, "nieuwe_prijs": 5.0, "verwachte_punten": 300, "type": "Puncher"},
-    ]
+    csv_file = "renners.csv"
     
-    # Voeg opvulling toe (Knechten en talenten)
-    types = ["Knecht", "Klimmer", "Sprinter", "Vrijbuiter"]
-    for i in range(1, 40):
-        data.append({
-            "naam": f"Peloton Renner {i}", 
-            "oude_prijs": round(random.uniform(2, 6), 1), 
-            "nieuwe_prijs": None, 
-            "verwachte_punten": random.randint(20, 250),
-            "type": random.choice(types)
-        })
+    if os.path.exists(csv_file):
+        try:
+            df = pd.read_csv(csv_file)
+            # Normaliseer kolomnamen
+            df.columns = [c.lower().strip() for c in df.columns]
+            
+            # Valideer kolommen
+            required = {'naam', 'prijs', 'verwachte_punten'}
+            if not required.issubset(df.columns):
+                st.error(f"CSV Fout. Vereiste kolommen: {required}")
+                return pd.DataFrame()
+            
+            if 'type' not in df.columns:
+                df['type'] = 'Onbekend'
+                
+            df['actuele_prijs'] = df['prijs']
+            df['waarde'] = df['verwachte_punten'] / df['actuele_prijs']
+            return df
+            
+        except Exception as e:
+            st.error(f"Fout bij lezen CSV: {e}")
+            return pd.DataFrame()
 
-    df = pd.DataFrame(data)
-    
-    # LOGICA: Als er een nieuwe prijs is (van het nieuwe seizoen), gebruik die. Anders fallback.
-    df['actuele_prijs'] = df['nieuwe_prijs'].fillna(df['oude_prijs'])
-    df['waarde'] = df['verwachte_punten'] / df['actuele_prijs'] # Points per Million
-    
-    return df
+    else:
+        # FALLBACK DATA (Vorig jaar / Schattingen)
+        # Zodat je de app kunt testen terwijl je wacht op de lancering
+        data = [
+            {"naam": "Mathieu van der Poel", "type": "Kopman", "prijs": 12.0, "verwachte_punten": 1150},
+            {"naam": "Tadej Pogacar", "type": "Kopman", "prijs": 12.5, "verwachte_punten": 900},
+            {"naam": "Wout van Aert", "type": "Kopman", "prijs": 12.0, "verwachte_punten": 950},
+            {"naam": "Jasper Philipsen", "type": "Sprinter", "prijs": 11.0, "verwachte_punten": 850},
+            {"naam": "Mads Pedersen", "type": "Klassiek", "prijs": 10.0, "verwachte_punten": 920},
+            {"naam": "Tom Pidcock", "type": "Klassiek", "prijs": 9.0, "verwachte_punten": 550},
+            {"naam": "Arnaud De Lie", "type": "Sprinter", "prijs": 8.0, "verwachte_punten": 600},
+            {"naam": "Olav Kooij", "type": "Sprinter", "prijs": 7.0, "verwachte_punten": 450},
+            {"naam": "Maxim Van Gils", "type": "Klimmer", "prijs": 6.0, "verwachte_punten": 520},
+            {"naam": "Thibau Nys", "type": "Puncher", "prijs": 5.0, "verwachte_punten": 350},
+            {"naam": "Tim Merlier", "type": "Sprinter", "prijs": 6.0, "verwachte_punten": 440},
+            {"naam": "Biniam Girmay", "type": "Sprinter", "prijs": 6.5, "verwachte_punten": 480},
+        ]
+        # Opvulling
+        import random
+        for i in range(1, 40):
+            data.append({
+                "naam": f"Knecht/Talent {i}", 
+                "type": "Knecht", 
+                "prijs": round(random.uniform(2, 5), 1), 
+                "verwachte_punten": random.randint(50, 200)
+            })
+            
+        df = pd.DataFrame(data)
+        df['actuele_prijs'] = df['prijs']
+        df['waarde'] = df['verwachte_punten'] / df['actuele_prijs']
+        return df
 
 def optimize_team(df, budget, max_renners, verplichte_renners):
-    """
-    Draait het Lineair Programmering algoritme.
-    """
-    prob = pulp.LpProblem("Wielermanager_Optimalisatie", pulp.LpMaximize)
-    renners_indices = df.index.tolist()
+    # Solver setup
+    prob = pulp.LpProblem("WielerTeam2026", pulp.LpMaximize)
+    indices = df.index.tolist()
+    keuze = pulp.LpVariable.dicts("Selecteer", indices, 0, 1, pulp.LpBinary)
+
+    # Doelfunctie: Max punten
+    prob += pulp.lpSum([df.loc[i, 'verwachte_punten'] * keuze[i] for i in indices])
+
+    # Constraints
+    prob += pulp.lpSum([df.loc[i, 'actuele_prijs'] * keuze[i] for i in indices]) <= budget
+    prob += pulp.lpSum([keuze[i] for i in indices]) == max_renners
     
-    # Variabelen (0 of 1)
-    keuze = pulp.LpVariable.dicts("Keuze", renners_indices, 0, 1, pulp.LpBinary)
-
-    # Doelfunctie: Maximaliseer punten
-    prob += pulp.lpSum([df.loc[i, 'verwachte_punten'] * keuze[i] for i in renners_indices])
-
-    # Constraint 1: Budget
-    prob += pulp.lpSum([df.loc[i, 'actuele_prijs'] * keuze[i] for i in renners_indices]) <= budget
-
-    # Constraint 2: Aantal renners
-    prob += pulp.lpSum([keuze[i] for i in renners_indices]) == max_renners
-    
-    # Constraint 3: Verplichte renners (Must haves)
-    # FIX: Directe assignment zonder tussenvariabele
-    for renner_naam in verplichte_renners:
-        # Zoek de index van de verplichte renner
-        matches = df[df['naam'] == renner_naam].index
+    # Verplichte renners
+    for naam in verplichte_renners:
+        matches = df[df['naam'] == naam].index
         if len(matches) > 0:
-            idx = matches[0]
-            prob += keuze[idx] == 1
+            prob += keuze[matches[0]] == 1
 
     prob.solve(pulp.PULP_CBC_CMD(msg=0))
     
-    status = pulp.LpStatus[prob.status]
-    
-    if status == "Optimal":
-        geselecteerde_indices = [i for i in renners_indices if keuze[i].varValue == 1]
-        return df.loc[geselecteerde_indices].copy(), True
-    else:
-        return None, False
+    if pulp.LpStatus[prob.status] == "Optimal":
+        selection = [i for i in indices if keuze[i].varValue == 1]
+        return df.loc[selection].copy(), True
+    return None, False
 
 # --- UI LAYOUT ---
 
-st.title("🚴 Sporza Wielermanager: Auto-Optimizer")
-st.markdown("""
-Dit dashboard berekent het **wiskundig optimale team** voor de voorjaarsklassiekers. 
-Het gebruikt prijzen van vorig jaar totdat de nieuwe bekend zijn.
-""")
+# Header met Countdown
+col_title, col_count = st.columns([2, 1])
+with col_title:
+    st.title("🚴 Sporza Wielermanager 2026")
+    st.caption("De officieuze team optimizer")
 
-# Sidebar settings
-st.sidebar.header("Team Instellingen")
-budget_input = st.sidebar.number_input("Budget (€ Miljoen)", value=100.0, step=0.5)
-aantal_renners_input = st.sidebar.number_input("Aantal Renners", value=16, step=1)
+with col_count:
+    st.info(f"⏱️ **Countdown:**\n\n{get_countdown()}")
 
-# Laad data
+st.divider()
+
+# Sidebar
+st.sidebar.header("⚙️ Instellingen")
+budget = st.sidebar.number_input("Budget (€M)", value=100.0, step=0.5)
+aantal = st.sidebar.number_input("Aantal Renners", value=16, step=1)
+
+# Data Laden
 df = load_data()
 
-# Interactieve filters
-st.sidebar.subheader("Verplichte Renners")
-st.sidebar.markdown("Kies renners die **zeker** in je team moeten zitten:")
-alle_namen = df['naam'].tolist()
-verplichte_renners = st.sidebar.multiselect("Selecteer 'Must Haves'", alle_namen)
+# Status melding over data
+if not os.path.exists("renners.csv"):
+    st.warning("""
+    ⚠️ **Let op:** De officiële Sporza prijzen voor 2026 zijn nog niet beschikbaar. 
+    Deze app gebruikt nu **geschatte data** of data van vorig jaar om te oefenen.
+    Upload `renners.csv` zodra de prijzen bekend zijn!
+    """)
+else:
+    st.success("✅ Actuele data (renners.csv) geladen.")
 
-# Hoofdactie
-if st.button("🚀 Bereken Optimaal Team", type="primary"):
+# Selectie Logica
+if not df.empty:
+    st.sidebar.subheader("Verplichte Renners")
+    must_haves = st.sidebar.multiselect("Wie moet er zeker mee?", df['naam'].sort_values())
+
+    c1, c2 = st.sidebar.columns(2)
+    if c1.button("🚀 Optimaliseer", type="primary"):
+        with st.spinner("Puzzelen..."):
+            res, ok = optimize_team(df, budget, aantal, must_haves)
+            st.session_state['optimized_team'] = res
+            st.session_state['optimization_success'] = ok
     
-    with st.spinner('De supercomputer is aan het rekenen...'):
-        beste_team, success = optimize_team(df, budget_input, aantal_renners_input, verplichte_renners)
+    if c2.button("Reset"):
+        st.session_state['optimized_team'] = None
+        st.session_state['optimization_success'] = False
+        st.rerun()
 
-    if success:
-        totaal_prijs = beste_team['actuele_prijs'].sum()
-        totaal_punten = beste_team['verwachte_punten'].sum()
+    # Resultaat Weergave
+    if st.session_state['optimization_success'] and st.session_state['optimized_team'] is not None:
+        team = st.session_state['optimized_team']
         
-        # Metrics tonen
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Verwachte Punten", f"{int(totaal_punten)}")
-        col2.metric("Totaal Budget", f"€{totaal_prijs:.1f}M", delta=f"{budget_input - totaal_prijs:.1f}M over")
-        col3.metric("Aantal Renners", len(beste_team))
+        # KPI's
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Verwachte Punten", int(team['verwachte_punten'].sum()))
+        kost = team['actuele_prijs'].sum()
+        k2.metric("Kosten", f"€{kost:.1f}M", delta=f"€{budget - kost:.1f}M over")
+        k3.metric("Renners", len(team))
         
-        st.subheader("Jouw Selectie")
-        
-        # Mooie tabel weergave
+        # Grafische weergave verdeling
+        with st.expander("📊 Zie verdeling budget"):
+            st.bar_chart(team, x="naam", y="actuele_prijs")
+
+        st.subheader("Jouw Winnende Selectie")
         st.dataframe(
-            beste_team[['naam', 'type', 'actuele_prijs', 'verwachte_punten', 'waarde']].sort_values(by='actuele_prijs', ascending=False),
+            team[['naam', 'type', 'actuele_prijs', 'verwachte_punten', 'waarde']].sort_values('actuele_prijs', ascending=False),
             column_config={
                 "naam": "Renner",
-                "type": "Specialiteit",
-                "actuele_prijs": st.column_config.NumberColumn("Prijs (M)", format="€%.1f"),
-                "verwachte_punten": "Exp. Punten",
-                "waarde": st.column_config.ProgressColumn("Efficiency (Pts/€)", format="%.2f", min_value=0, max_value=150)
+                "actuele_prijs": st.column_config.NumberColumn("Prijs", format="€%.1f"),
+                "waarde": st.column_config.ProgressColumn("Punten/Miljoen", min_value=0, max_value=200, format="%.1f")
             },
             use_container_width=True,
             hide_index=True
         )
         
-        # Download knop
-        csv = beste_team.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Download Team als CSV", data=csv, file_name="mijn_wielerteam.csv", mime="text/csv")
-        
-    else:
-        st.error("Kon geen geldig team vinden. Waarschijnlijk is je budget te laag voor de verplichte renners die je hebt gekozen.")
+        # Export
+        csv = team.to_csv(index=False).encode('utf-8')
+        st.download_button("💾 Download Selectie", csv, "mijn_team_2026.csv", "text/csv")
 
-# Data inspectie sectie (inklapbaar)
-with st.expander("🔍 Bekijk volledige renners database"):
-    st.dataframe(df)
+else:
+    st.error("Geen data beschikbaar.")
