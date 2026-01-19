@@ -2,103 +2,97 @@ import streamlit as st
 import pandas as pd
 import pulp
 
-# --- CONFIGURATIE ---
-st.set_page_config(page_title="Wielermanager Optimizer", layout="wide")
+st.set_page_config(page_title="Wielermanager Pro", layout="wide")
 
 # --- FUNCTIES ---
 def laad_data(uploaded_file):
     if uploaded_file is not None:
-        return pd.read_excel(uploaded_file)
+        df = pd.read_excel(uploaded_file)
+        df = df.fillna(0) # Lege cellen worden 0
+        return df
     return None
 
-def optimaliseer_team(df, budget, max_renners, verplichte_renners):
-    # 1. Het Probleem definiëren (Maximaliseren)
-    prob = pulp.LpProblem("Sporza_Team_Selectie", pulp.LpMaximize)
+def optimaliseer_team(df, budget, max_renners, verplichte_renners, race_kolommen):
+    # Bereken totaalscore (som van alle races)
+    df['Totaal_Score'] = df[race_kolommen].sum(axis=1)
 
-    # 2. Variabelen aanmaken (Elke renner is 0 of 1)
-    # We gebruiken de index van de dataframe als ID
+    prob = pulp.LpProblem("Sporza_Team", pulp.LpMaximize)
     renner_vars = pulp.LpVariable.dicts("Renner", df.index, cat='Binary')
 
-    # 3. Objective Function: Maximaliseer de som van 'Verwachte_Score'
-    prob += pulp.lpSum([df.loc[i, 'Verwachte_Score'] * renner_vars[i] for i in df.index])
+    # Objective
+    prob += pulp.lpSum([df.loc[i, 'Totaal_Score'] * renner_vars[i] for i in df.index])
 
-    # 4. Constraints (De regels)
-    
-    # A. Budget regel
+    # Constraints
     prob += pulp.lpSum([df.loc[i, 'Prijs'] * renner_vars[i] for i in df.index]) <= budget
-    
-    # B. Aantal renners regel
     prob += pulp.lpSum([renner_vars[i] for i in df.index]) == max_renners
 
-    # C. Verplichte renners (Must-haves die jij hebt aangevinkt)
-    if verplichte_renners:
-        # Zoek de indices van de geselecteerde namen
-        for renner_naam in verplichte_renners:
-            idx = df[df['Naam'] == renner_naam].index
-            if not idx.empty:
-                prob += renner_vars[idx[0]] == 1
+    # Verplichte renners
+    for renner_naam in verplichte_renners:
+        idx = df[df['Naam'] == renner_naam].index
+        if not idx.empty:
+            prob += renner_vars[idx[0]] == 1
 
-    # 5. Los het op
     prob.solve()
 
-    # 6. Resultaat verwerken
     if pulp.LpStatus[prob.status] == 'Optimal':
-        gekozen_indices = [i for i in df.index if renner_vars[i].varValue == 1]
-        return df.loc[gekozen_indices]
-    else:
-        return None
+        indices = [i for i in df.index if renner_vars[i].varValue == 1]
+        return df.loc[indices]
+    return None
 
-# --- DE APP INTERFACE ---
-st.title("🚴 Sporza Voorjaar Optimizer")
-st.markdown("Upload je Excel en laat de wiskunde het perfecte team bouwen.")
+# --- APP ---
+st.title("🚴 Sporza Kalender Optimizer")
 
-# Sidebar voor instellingen
-st.sidebar.header("Instellingen")
-budget_input = st.sidebar.number_input("Budget (€)", value=100000000, step=1000000, format="%d")
-aantal_renners = st.sidebar.number_input("Aantal Renners", value=20, step=1)
-
-# File uploader
-uploaded_file = st.sidebar.file_uploader("Upload renners_data.xlsx", type=["xlsx"])
+uploaded_file = st.sidebar.file_uploader("Upload je Kalender Excel", type=["xlsx"])
+budget = st.sidebar.number_input("Budget", value=100000000, step=1000000)
+aantal = st.sidebar.number_input("Aantal Renners", value=20)
 
 if uploaded_file:
     df = laad_data(uploaded_file)
     
-    # Even checken of de kolommen kloppen
-    required_cols = ['Naam', 'Prijs', 'Verwachte_Score', 'Team']
-    if not all(col in df.columns for col in required_cols):
-        st.error(f"Je Excel mist kolommen! Zorg voor: {required_cols}")
-    else:
-        # Pre-filter optie (Must-haves)
-        st.subheader("Jouw Data")
-        
-        # Laat gebruiker renners kiezen die SOWIESO in het team moeten
-        alle_namen = df['Naam'].tolist()
-        must_haves = st.multiselect("Welke renners wil je verplicht in je team?", alle_namen)
-        
-        # Berekening starten
-        if st.button("🚀 Bereken Optimaal Team", type="primary"):
-            with st.spinner('De computer kraakt de cijfers...'):
-                beste_team = optimaliseer_team(df, budget_input, aantal_renners, must_haves)
+    # Automatisch detecteren welke kolommen koersen zijn
+    # We nemen aan dat alles na 'Type' een koers is
+    basis_kolommen = ['Naam', 'Team', 'Prijs', 'Type']
+    race_kolommen = [col for col in df.columns if col not in basis_kolommen and col != 'Totaal_Score']
+
+    st.info(f"Koersen gevonden in data: {', '.join(race_kolommen)}")
+
+    must_haves = st.multiselect("Verplichte Renners", df['Naam'].tolist())
+
+    if st.button("🚀 Genereer Team"):
+        beste_team = optimaliseer_team(df, budget, aantal, must_haves, race_kolommen)
+
+        if beste_team is not None:
+            totaal_punten = beste_team['Totaal_Score'].sum()
+            st.success(f"Team Compleet! Verwachte totaalscore: {totaal_punten:.0f}")
+
+            # 1. Team Overzicht
+            st.subheader("Het Selecteerde Team")
+            weergave_cols = ['Naam', 'Team', 'Prijs', 'Totaal_Score']
+            st.dataframe(beste_team[weergave_cols], use_container_width=True)
+
+            # 2. De Kalender Analyse (Heatmap)
+            st.subheader("📅 Kalender & Puntenverdeling")
+            st.markdown("Hoe donkerder de cel, hoe meer punten verwacht in die koers.")
             
-            if beste_team is not None:
-                st.success(f"Team gevonden! Totaal verwachte punten: **{beste_team['Verwachte_Score'].sum():.0f}**")
-                
-                # Mooie weergave van het team
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Totale Kost", f"€ {beste_team['Prijs'].sum():,}")
-                col2.metric("Resterend Budget", f"€ {budget_input - beste_team['Prijs'].sum():,}")
-                col3.metric("Aantal Renners", len(beste_team))
-                
-                st.dataframe(
-                    beste_team[['Naam', 'Team', 'Prijs', 'Verwachte_Score']].style.background_gradient(subset=['Verwachte_Score'], cmap="Greens"),
-                    use_container_width=True
-                )
-                
-                # Analyse van het team
-                st.subheader("Team Balans")
-                st.bar_chart(beste_team['Team'].value_counts())
-                
-            else:
-                st.error("Geen oplossing gevonden. Probeer je budget te verhogen of minder 'must-haves' te kiezen.")
+            # We maken een heatmap met Pandas styling
+            heatmap_data = beste_team.set_index('Naam')[race_kolommen]
+            
+            # Sorteer op totaalscore voor overzichtelijkheid
+            heatmap_data['Totaal'] = heatmap_data.sum(axis=1)
+            heatmap_data = heatmap_data.sort_values('Totaal', ascending=False).drop(columns=['Totaal'])
+
+            st.dataframe(
+                heatmap_data.style.background_gradient(cmap="Greens", axis=None).format("{:.0f}"),
+                use_container_width=True,
+                height=600
+            )
+            
+            # 3. Grafiek: Punten per Koers
+            st.subheader("📊 Waar scoor je het meest?")
+            koers_totalen = beste_team[race_kolommen].sum().sort_values(ascending=False)
+            st.bar_chart(koers_totalen)
+
+        else:
+            st.error("Geen team gevonden binnen budget.")
 else:
-    st.info("Upload een Excel bestand in de sidebar om te beginnen.")
+    st.info("Upload eerst je Excel bestand.")
