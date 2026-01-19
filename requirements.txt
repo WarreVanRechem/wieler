@@ -3,5 +3,5 @@ pandas
 openpyxl
 pulp
 matplotlib
-requests
 beautifulsoup4
+cloudscraper

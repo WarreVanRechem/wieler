@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import requests
+import cloudscraper  # DE OPLOSSING VOOR 403 ERRORS
 from bs4 import BeautifulSoup
 import time
 import random
@@ -24,16 +24,9 @@ RACES = {
     'LBL': 'https://www.procyclingstats.com/race/liege-bastogne-liege/2025/startlist'
 }
 
-# Betere headers om blokkades te voorkomen
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.5',
-    'Referer': 'https://www.google.com/'
-}
-
 # --- FUNCTIES ---
 def clean_naam(pcs_naam):
+    """Zet 'VAN DER POEL Mathieu' om naar 'Mathieu van der Poel'"""
     try:
         parts = pcs_naam.split()
         last_name_parts = [p for p in parts if p.isupper()]
@@ -49,22 +42,24 @@ def clean_naam(pcs_naam):
 def scrape_race(url, race_code, status_log):
     renners_gevonden = []
     try:
-        response = requests.get(url, headers=HEADERS, timeout=10)
+        # HIER GEBRUIKEN WE CLOUDSCRAPER IN PLAATS VAN REQUESTS
+        scraper = cloudscraper.create_scraper() 
+        response = scraper.get(url)
         
-        # Check of we geblokkeerd worden
         if response.status_code == 403:
-            status_log.error(f"❌ {race_code}: Toegang geweigerd (403). PCS blokkeert deze server.")
+            status_log.error(f"❌ {race_code}: Nog steeds geblokkeerd (403).")
             return []
         elif response.status_code != 200:
             status_log.warning(f"⚠️ {race_code}: Status code {response.status_code}")
             return []
 
         soup = BeautifulSoup(response.content, 'html.parser')
-        # Zoek renners (probeert meerdere manieren)
+        
+        # 1. Probeer de standaard 'rider' links
         rider_links = soup.select('a[href^="rider/"]')
         
+        # 2. Fallback: Soms zitten ze in een specifieke lijst structuur
         if not rider_links:
-             # Fallback selector
             rider_links = soup.select('div.main > ul > li > a')
 
         for link in rider_links:
@@ -72,7 +67,6 @@ def scrape_race(url, race_code, status_log):
             if raw_name:
                 renners_gevonden.append(clean_naam(raw_name))
         
-        # Unieke namen teruggeven
         return list(set(renners_gevonden))
 
     except Exception as e:
@@ -80,7 +74,7 @@ def scrape_race(url, race_code, status_log):
     return []
 
 def get_manual_data():
-    # Dit is de backup dataset zodat je ALTIJD verder kunt
+    """Backup dataset voor als het scrapen faalt"""
     data = [
         {'Naam': 'Tadej Pogacar', 'Team': 'UAE Team Emirates', 'Prijs': 12000000, 'Type': 'Klimmer/Kassei', 'SB': 100, 'MSR': 80, 'LBL': 120},
         {'Naam': 'Mathieu van der Poel', 'Team': 'Alpecin-Deceuninck', 'Prijs': 12000000, 'Type': 'Kassei', 'MSR': 90, 'E3': 80, 'GW': 80, 'RVV': 120, 'PR': 120},
@@ -100,7 +94,8 @@ def get_manual_data():
 def save_data(df):
     huidige_map = os.path.dirname(__file__)
     pad = os.path.join(huidige_map, "..", "renners_data.xlsx")
-    # Zorg dat alle race kolommen bestaan (ook als scraper ze mist)
+    
+    # Kolommen fixen
     for code in RACES.keys():
         if code not in df.columns:
             df[code] = 0
@@ -111,14 +106,17 @@ def save_data(df):
 # --- APP INTERFACE ---
 st.title("🌍 Data Beheer")
 
-# Huidige status
+# Huidige status tonen
 huidige_map = os.path.dirname(__file__)
 pad = os.path.join(huidige_map, "..", "renners_data.xlsx")
 if os.path.exists(pad):
-    df_huidig = pd.read_excel(pad)
-    st.info(f"📂 Database bevat **{len(df_huidig)} renners**.")
-    with st.expander("Bekijk huidige data"):
-        st.dataframe(df_huidig)
+    try:
+        df_huidig = pd.read_excel(pad)
+        st.info(f"📂 Database bevat **{len(df_huidig)} renners**.")
+        with st.expander("Bekijk huidige data"):
+            st.dataframe(df_huidig)
+    except:
+        st.error("Excel bestand is corrupt of leeg.")
 else:
     st.warning("⚠️ Nog geen data gevonden.")
 
@@ -126,10 +124,11 @@ st.markdown("---")
 
 col1, col2 = st.columns(2)
 
-# --- OPTIE 1: SCRAPER ---
+# --- OPTIE 1: CLOUDSCRAPER ---
 with col1:
-    st.subheader("Optie 1: Live Scrapen")
-    st.caption("Probeer data van PCS te halen. Let op: werkt vaak niet op Cloud servers (blokkade).")
+    st.subheader("Optie 1: Live Scrapen (Slim)")
+    st.caption("Probeert de PCS blokkade te omzeilen met Cloudscraper.")
+    
     if st.button("🚀 Start Live Update"):
         status_box = st.status("Verbinden met PCS...", expanded=True)
         all_riders_dict = {}
@@ -146,25 +145,27 @@ with col1:
                 for naam in riders:
                     if naam not in all_riders_dict:
                         all_riders_dict[naam] = {'Naam': naam, 'Team': 'Check Excel', 'Prijs': 5000000, 'Type': 'Algemeen'}
-                    all_riders_dict[naam][code] = 100
+                    all_riders_dict[naam][code] = 100 # Renner start = 100 punten
             
-            time.sleep(random.uniform(1.0, 2.0)) # Langere pauze
+            # Pauze is nog steeds belangrijk!
+            time.sleep(random.uniform(1.0, 3.0)) 
             progress_bar.progress((i + 1) / len(RACES))
 
         if totaal_gevonden > 0:
             df_nieuw = pd.DataFrame(list(all_riders_dict.values()))
-            pad = save_data(df_nieuw)
+            save_data(df_nieuw)
             status_box.update(label="✅ Klaar!", state="complete", expanded=False)
-            st.success(f"Update geslaagd! {len(df_nieuw)} renners gevonden.")
+            st.success(f"Gelukt! {len(df_nieuw)} renners gevonden.")
             st.rerun()
         else:
             status_box.update(label="❌ Mislukt", state="error", expanded=True)
-            st.error("Geen renners gevonden. PCS blokkeert waarschijnlijk je IP. Gebruik Optie 2 hiernaast!")
+            st.error("Cloudscraper kwam er ook niet doorheen. Gebruik Optie 2!")
 
 # --- OPTIE 2: BACKUP ---
 with col2:
     st.subheader("Optie 2: Noodoplossing")
     st.caption("Werkt de scraper niet? Laad hier direct een werkende basis-set in.")
+    
     if st.button("💾 Laad Backup Data"):
         df_backup = get_manual_data()
         save_data(df_backup)
