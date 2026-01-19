@@ -1,5 +1,7 @@
 streamlit
 pandas
-pulp
 openpyxl
+pulp
 matplotlib
+requests
+beautifulsoup4
